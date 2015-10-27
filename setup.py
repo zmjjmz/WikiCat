@@ -11,6 +11,6 @@ setup (
     author='Zachary Jablons',
     url='https://github.com/zmjjmz/WikiCat',
     py_modules = ['WikiCat'],
-    install_requires = ['beautifulsoup4', 'scikit-learn', 'numpy'],
+    install_requires = ['beautifulsoup4', 'scikit-learn', 'numpy', 'requests'],
     classifiers = classifiers
 )

@@ -7,10 +7,7 @@ from os.path import (
     getmtime,
 )
 from WikiCatUtils import (
-    scrape_page,
-    read_categories,
     load_model_params,
-    check_in_cache,
     save_model,
     ArticlePage,
     CategoryPage,

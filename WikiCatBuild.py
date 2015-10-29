@@ -1,31 +1,21 @@
 from __future__ import division, print_function # Python2 compat
 from argparse import ArgumentParser
-from os import getcwd
+from os import getcwd, mkdir
 from os.path import (
     join,
     exists,
     getmtime,
 )
 from WikiCatUtils import (
-    load_model_params,
-    save_model,
+    #load_model_params,
+    get_fullpath,
+    read_categories,
+    strip_unicode,
+    #save_model,
     ArticlePage,
     CategoryPage,
     Cache,
 )
-
-
-
-def get_fullpath(path):
-    """ Check if the path given is absolute or relative, and if it's relative
-    prepend the current directory """
-    if path[0] != '/':
-        return join(getcwd, path)
-    else:
-        return path
-
-def download_category_page(page_uri, limit):
-
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser()
@@ -36,7 +26,7 @@ if __name__ == "__main__":
     arg_parser.add_argument("categories_file", action='store', help='Path to\
                              CSV containing Category Page URIs, Max Amount of\
                              Articles (e.g. Philosophy, 100). Non-absolute paths are\
-                            considered relative to the current directory.', dest='categories')
+                             considered relative to the current directory.')#, dest='categories')
 
     arg_parser.add_argument("-r", "--representation", action='store', help='How to\
                             represent the data to the model. Options are BoW,\
@@ -70,15 +60,24 @@ if __name__ == "__main__":
                             categories but it will make the folder for it.",
                             dest='cache_only', default=False)
 
+    arg_parser.add_argument("--maxlinks", action='store',
+                            help="Maximum amount of links that get used for\
+                            each category. Can be used to help control bias, but\
+                            at the cost of having less data. If not set, no\
+                            maximum amount of links is imposed",
+                            dest='maxlinks', default=None, type=int)
+
+
 
     args = arg_parser.parse_args()
 
     # Setup data
-    cwd = getcwd()
-    categories_to_download = read_categories(get_fullpath(args.categories))
-    cache = Cache(get_fullpath(args.cache))
+    if not exists('/tmp/WikiCat'):
+        mkdir('/tmp/WikiCat')
+    categories_to_download = read_categories(get_fullpath(args.categories_file))
+    cache = Cache(get_fullpath(args.cache), verbosity=args.verbosity)
     for category_uri in categories_to_download:
-        cache.loadCategory(category_uri, use_only_cache=args.cache_only)
+        cache.loadCategory(category_uri, maxlinks=args.maxlinks, only_use_cached=args.cache_only)
 
     # Build training / validation / testing set.
 

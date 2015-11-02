@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup as BS
 import requests
 from itertools import chain
 from datetime import datetime
+import numpy as np
+from sklearn.utils import resample, shuffle
 import re
 
 def make_link(partial_link):
@@ -30,10 +32,24 @@ def read_categories(filepath):
         # Hopefully there aren't any newlines in the URLs
         return f.read().rstrip().split('\n')
 
-def strip_unicode(s):
-    return re.sub(r'[^\x00-\x7F]+','', s)
-    return s.encode('unicode_escape').decode('unicode_escape')
+def safe_path(s):
+    no_unicode = re.sub(r'[^\x00-\x7F]+','', s)
+    no_slashes = no_unicode.replace('/','_')
+    return no_slashes
 
+def resample_to_equal(labels):
+    # just return the indices to be used
+    split_by_label = {label:np.where(np.argmax(labels, axis=1) == label)[0]
+                      for label in range(labels.shape[1])}
+    min_size = min([len(idxs) for idxs in split_by_label.values()])
+    all_data = []
+    for label in split_by_label:
+        split_by_label[label] = resample(split_by_label[label],
+                                         n_samples=min_size, replace=False)
+        these_labels = [label]*min_size
+        all_data = chain(all_data, zip(split_by_label[label], these_labels))
+    all_data = map(np.array,zip(*shuffle(list(all_data))))
+    return all_data
 
 
 class WikiPage:
@@ -67,7 +83,7 @@ class WikiPage:
 
     def Title(self):
         if self.title is None:
-            self.title = strip_unicode(self.page_soup.find(id='firstHeading').text)
+            self.title = safe_path(self.page_soup.find(id='firstHeading').text)
         return self.title
 
     def Category(self):
@@ -105,7 +121,7 @@ class ArticlePage(WikiPage):
             return self.category
 
     def setCategory(self, category):
-        self.category = strip_unicode(category)
+        self.category = safe_path(category)
 
 class CategoryPage(WikiPage):
     def get_links(self, category_soup):
@@ -192,11 +208,20 @@ class Cache:
         return self._check_cached(categoryPage.Title(), categoryPage.lastModified())
 
     def articleCached(self, articlePage):
-        return self._check_cached(join(articlePage.Category(), articlePage.Title()),
-                                  articlePage.lastModified())
+        try:
+            return self._check_cached(join(articlePage.Category(), articlePage.Title()),
+                                      articlePage.lastModified())
+        except UnicodeDecodeError as ude:
+            print("Could not check on %s because of unicode madness"
+                    % join(articlePage.Category(), articlePage.Title()))
+            return False
 
     def _save_article(self, category, article):
         article.loadAll()
+        if article.Title() in self.contents:
+            raise ValueError("Article %s already exists in Cache, this should not happen"
+                             " unless an article is referenced by two"
+                             " categories" % article.Title())
         self.contents[article.Title()] = article
         with open(join(join(self.path, category), article.Title()), 'wb') as f:
             # no this isn't the absolute best way to serialize stuff
@@ -208,6 +233,10 @@ class Cache:
             article.page_soup = page_soup_tmp
 
     def _load_article(self, category, article_title):
+        if article_title in self.contents:
+            raise ValueError("Article %s already exists in Cache, this should not happen"
+                             " unless an article is referenced by two"
+                             " categories" % article_title)
         with open(join(join(self.path, category), article_title), 'rb') as f:
             if self.verbosity > 1:
                 print("Loading %s from category %s" % (article_title, category))
@@ -222,7 +251,15 @@ class Cache:
 
     def _load_articles(self, category, article_titles):
         for article_title in article_titles:
-            self._load_article(category, article_title)
+            try:
+                self._load_article(category, article_title)
+            except ValueError as vae:
+                if self.verbosity > 0:
+                    print(vae)
+                # We'll default to taking the article's first category (in
+                # the order of the list of categories given)
+                continue
+
 
     def loadCategory(self, category_uri, maxlinks=None, only_use_cached=False):
         category_page = CategoryPage(category_uri, verbosity=self.verbosity)
@@ -233,7 +270,7 @@ class Cache:
                 if self.verbosity > 1:
                     print("Creating directory for %s" %
                           category_page.Category())
-                mkdir(strip_unicode(join(self.path, category_page.Category())))
+                mkdir(join(self.path, category_page.Category()))
             links = category_page.Content(maxlinks=maxlinks)
             articles = [ArticlePage(uri, verbosity=self.verbosity) for uri in
                         links]
@@ -242,18 +279,25 @@ class Cache:
                                                            category_page.Category()))
             for article in articles:
                 article.setCategory(category_page.Category())
-                if self.articleCached(article):
-                    if self.verbosity > 2:
-                        print("Using cached version of %s" % article.Title())
-                    self._load_article(category_page.Category(),
-                                       article.Title())
-                else:
-                    # nomenclature is a bit confusing, but for the purpose of
-                    # getting everything in self.contents this is what we want
-                    if self.verbosity > 2:
-                        print("Downloading new version of %s" % article.Title())
-                    self._save_article(category_page.Category(),
-                                       article)
+                try:
+                    if self.articleCached(article):
+                        if self.verbosity > 2:
+                            print("Using cached version of %s" % article.Title())
+                        self._load_article(category_page.Category(),
+                                           article.Title())
+                    else:
+                        # nomenclature is a bit confusing, but for the purpose of
+                        # getting everything in self.contents this is what we want
+                        if self.verbosity > 2:
+                            print("Downloading new version of %s" % article.Title())
+                        self._save_article(category_page.Category(),
+                                           article)
+                except ValueError as vae:
+                    if self.verbosity > 0:
+                        print(vae)
+                    # We'll default to taking the article's first category (in
+                    # the order of the list of categories given)
+                    continue
 
         else:
             if not exists(join(self.path, category_page.Category())):
@@ -269,21 +313,85 @@ class Cache:
                           category_page.Category())
             self._load_articles(category_page.Category(), article_files)
 
-def check_in_cache(cache_path, Page):
-    """ Returns False if we need to (re-)download this page, True
-    otherwise """
-    title = Page.title
-    if exists(join(cache_path, title)):
-        # get the last modified time for the category directory
-        cached_last_modified = getmtime(join(cache_path, title))
-        if Page.last_modified > cached_last_modified:
-            # this means that manually going in and editing the cache is a poor
-            # decision, since this function will fail this check
-            return False
-        else:
-            return True
-    else:
-        # if it's not in the cache, definitely need to download
-        return False
+    def get_dataset(self, train_perc, val_perc, test_perc):
+        slice_names = ['train', 'val', 'test']
+        if abs((train_perc + val_perc + test_perc) -  1.0) > 1e-7:
+            if self.verbosity > 0:
+                print("Train, Validation, and Test percentages must add up to 1!")
+            raise ValueError
+        perc_slices = {
+            'train': (0, train_perc),
+            'val': (train_perc, train_perc+val_perc),
+            'test': (train_perc+val_perc, 1),
+        }
+        adjust_slice = lambda x, length: slice(int(x[0]*length), int(x[1]*length))
 
+        if len(self.contents) == 0:
+            if self.verbosity > 0:
+                print("Make sure you've loaded some articles first!")
+            raise ValueError
+        category_article_map = {}
+        for articleTitle in self.contents:
+            article = self.contents[articleTitle]
+            if article.Category() in category_article_map:
+                # we only care about the content
+                category_article_map[article.Category()].append(article.Content())
+            else:
+                category_article_map[article.Category()] = [article.Content()]
+
+        category_label_map = {category:ind for ind, category in
+                          enumerate(category_article_map.keys())}
+        dset = {
+            'train':[],
+            'val':[],
+            'test':[],
+        }
+        for category in category_article_map:
+            random.shuffle(category_article_map[category])
+            for split in slice_names:
+                split_slice = adjust_slice(perc_slices[split],
+                                           len(category_article_map[category]))
+                sliced_cat = category_article_map[category][split_slice]
+                sliced_labels = [category_label_map[category]] * len(category_article_map[category])
+                dset[split] = chain(dset[split], zip(sliced_cat, sliced_labels))
+
+        for split in slice_names:
+            dset[split] = list(dset[split])
+            random.shuffle(dset[split])
+            dset[split] = list(zip(*dset[split]))
+
+        return dset, category_label_map
+
+class Model:
+    def __init__(self):
+        # hardcode
+        pass
+
+    def fit(self, train_dataset, val_dataset):
+        # train the model
+        pass
+
+    def score(self, dataset):
+        # evaluate the model's performance
+        pass
+
+
+class Representer:
+    def __init__(self):
+        # hardcode
+        pass
+
+    def fit(self, dataset):
+        # figure out the parameters of the representation
+        # given this dataset, and store them as the representer parameters
+        pass
+
+    def transform(self, dataset):
+        # apply modifications to the dataset to represent it
+        pass
+
+    def fit_transform(self, dataset):
+        # convenience
+        self.fit(dataset)
+        return self.transform(dataset)
 

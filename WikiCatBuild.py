@@ -29,6 +29,11 @@ if __name__ == "__main__":
                              Articles (e.g. Philosophy, 100). Non-absolute paths are\
                              considered relative to the current directory.')#, dest='categories')
 
+    arg_parser.add_argument("-r", "--root-dir", action='store', help='Path to\
+                            where the representer, model, and cache are stored.\
+                            Defaults to /tmp/WikiCat/',
+                            dest='root_dir', default='/tmp/WikiCat/')
+
     """
     arg_parser.add_argument("-r", "--representation", action='store', help='How to\
                             represent the data to the model. Options are BoW,\
@@ -39,7 +44,6 @@ if __name__ == "__main__":
                             specification as outlined in ModelChoices.txt. Non-absolute paths are\
                             considered relative to the current directory.\
                             Defaults to Logistic Regression w/C=1.0', dest='model', default='./default_model.json')
-    """
     arg_parser.add_argument("-o", "--model-out", action='store', help='Path to\
                             where the trained model should be saved. Defaults\
                             to /tmp/WikiCat/model.pkl. Non-absolute paths are\
@@ -60,7 +64,7 @@ if __name__ == "__main__":
                             Downloaded GloVe vectors are also stored in this\
                             directory.",
                             dest='cache', default='/tmp/WikiCat/cache')
-
+    """
     arg_parser.add_argument("-u", "--use-only-cache", action='store_true',
                             help="If set, will only load existing files and not\
                             download any new ones. It will still attempt to\
@@ -79,12 +83,18 @@ if __name__ == "__main__":
 
 
     args = arg_parser.parse_args()
+    root_dir = get_fullpath(args.root_dir)
 
     # Setup data
-    if not exists('/tmp/WikiCat'):
-        mkdir('/tmp/WikiCat')
+    if not exists(root_dir):
+        mkdir(root_dir)
+
+    model_fn = join(root_dir, 'model.pkl')
+    repr_fn = join(root_dir, 'repr.pkl')
+    cache_dir = join(root_dir, 'cache')
+
     categories_to_download = read_categories(get_fullpath(args.categories_file))
-    cache = Cache(get_fullpath(args.cache), verbosity=args.verbosity)
+    cache = Cache(cache_dir, verbosity=args.verbosity)
     for category_uri in categories_to_download:
         cache.loadCategory(category_uri, maxlinks=args.maxlinks, only_use_cached=args.cache_only)
 
@@ -105,9 +115,7 @@ if __name__ == "__main__":
     # Build representation of the data according to the arguments
     # this is encapsulated in the Representer object, which will take care of
     # vocabulary building and term weighting (if necessary)
-    dataset_rep = Representer(get_fullpath(args.cache), verbosity=args.verbosity, filter_by=chain(dset['train'][0], dset['val'][0], dset['test'][0]))
-    print(dataset_rep.maxes)
-    print(dataset_rep.mins)
+    dataset_rep = Representer(cache_dir, verbosity=args.verbosity, filter_by=chain(dset['train'][0], dset['val'][0], dset['test'][0]))
     #sklearn style
     dset_represented = {}
     dset_represented['train'] = (dataset_rep.fit_transform(dset['train'][0]),
@@ -127,8 +135,6 @@ if __name__ == "__main__":
     if args.verbosity > 0:
         model.evaluate(dset_represented)
 
-    save_obj(model, get_fullpath(args.model_out), verbosity=args.verbosity)
-    save_obj(dataset_rep, get_fullpath(args.repr_file),
-             verbosity=args.verbosity)
-
+    save_obj(model, model_fn, verbosity=args.verbosity)
+    save_obj(dataset_rep, repr_fn, verbosity=args.verbosity)
 

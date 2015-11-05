@@ -363,7 +363,7 @@ class Cache:
                 category_article_map[article.Category()] = [article.Content()]
 
         category_label_map = {category:ind for ind, category in
-                          enumerate(category_article_map.keys())}
+                          enumerate(sorted(category_article_map.keys()))}
         dset = {
             'train':[],
             'val':[],
@@ -502,7 +502,10 @@ class Representer:
             print("Determining normalization constants")
         if self.normalize:
             self.normalize = False
+            tmp_v = self.verbosity
+            self.verbosity = 0
             to_normalize = self.transform(dataset)
+            self.verbosity = tmp_v
             self.normalize = True
             self.maxes = np.max(to_normalize, axis=0)
             self.mins = np.min(to_normalize, axis=0)
@@ -531,7 +534,7 @@ class Representer:
             print("%d words were OOV out of %d total" % (oov, total_words))
         vecs = np.vstack(vecs)
         if self.normalize:
-            vecs = (vecs - self.maxes) / (self.maxes - self.mins)
+            vecs = (vecs - self.mins) / (self.maxes - self.mins)
             vecs[np.where(np.isnan(vecs))] = 0.5
         return vecs
 

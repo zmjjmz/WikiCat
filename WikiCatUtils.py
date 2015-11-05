@@ -11,8 +11,18 @@ import requests
 from itertools import chain
 from datetime import datetime
 import numpy as np
-from sklearn.utils import resample, shuffle
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.utils import resample, shuffle
+from sklearn.cross_validation import cross_val_score
 import re
+import codecs
+import urllib
+from zipfile import ZipFile
+from string import punctuation
+import sys
 
 def make_link(partial_link):
     # TODO: make this robust to being given a full link
@@ -51,6 +61,17 @@ def resample_to_equal(labels):
     all_data = map(np.array,zip(*shuffle(list(all_data))))
     return all_data
 
+def save_obj(obj, save_path, verbosity=1):
+    if verbosity > 0:
+        print("Saving object to %s" % save_path)
+    with open(save_path, 'wb') as f:
+        pickle.dump(obj, f)
+
+def load_obj(load_path, verbosity=1):
+    if verbosity > 0:
+        print("Loading model from %s" % load_path)
+    with open(load_path, 'rb') as f:
+        return pickle.load(f)
 
 class WikiPage:
     def __init__(self, uri, verbosity=1):
@@ -254,7 +275,7 @@ class Cache:
             try:
                 self._load_article(category, article_title)
             except ValueError as vae:
-                if self.verbosity > 0:
+                if self.verbosity > 1:
                     print(vae)
                 # We'll default to taking the article's first category (in
                 # the order of the list of categories given)
@@ -263,6 +284,8 @@ class Cache:
 
     def loadCategory(self, category_uri, maxlinks=None, only_use_cached=False):
         category_page = CategoryPage(category_uri, verbosity=self.verbosity)
+        if self.verbosity > 0:
+            print("Loading category %s" % category_page.Category())
         if (not only_use_cached):
             # If no category exists in the folder or we're not only using cached
             # ones, we should download stuff. The caveat this comes with is
@@ -363,35 +386,156 @@ class Cache:
         return dset, category_label_map
 
 class Model:
-    def __init__(self):
-        # hardcode
-        pass
+    def __init__(self, label_map):
+        """ A simple wrapper around LogisticRegression """
+        self.model = LogisticRegression(C=0.125, class_weight='auto')
+        self.ind_label_map = {v:k for k, v in label_map.items()}
 
-    def fit(self, train_dataset, val_dataset):
-        # train the model
-        pass
+    def fit(self, train_dataset):
+        self.model.fit(*train_dataset)
+        return self
+
+    def evaluate(self, dset):
+        """ Run a full evaluation of the model given training, validation, and test sets"""
+        train_score = self.score(dset['train'])
+        val_score = self.score(dset['val'])
+        cv_scores = cross_val_score(self.model, *dset['train'], cv=10)
+        test_score = self.score(dset['test'])
+        print("Train\tVal\tTest\tCV\n"
+              "%0.2f\t%0.2f\t%0.2f\t%0.2f (+/- %0.2f)" % (train_score,
+                                                          val_score, test_score,
+                                                          np.average(cv_scores),
+                                                          np.std(cv_scores)/2))
+    def predict_proba(self, dataset):
+        return self.model.predict_proba(dataset)
+
+    def predict(self, dataset):
+        return self.model.predict(dataset)
 
     def score(self, dataset):
-        # evaluate the model's performance
-        pass
+        return self.model.score(*dataset)
 
+
+def glove_read(dimsize, path, verbosity=1, existing=None):
+    member = 'glove.6B.%dd.txt' % dimsize
+    fn = join(path, 'glove_files/%s' % member)
+    zipfn = join(path, 'glove_files/glove_6B.zip')
+    if not exists(fn):
+        if not exists(join(path, 'glove_files')):
+            mkdir(join(path, 'glove_files'))
+        if verbosity > 0:
+            print("GloVe vectors of size %d aren't there" % dimsize)
+            url = "http://nlp.stanford.edu/data/glove.6B.zip"
+            print("Download GloVe vectors from %s to %s? y/n" % (url, zipfn))
+            confirm = input().rstrip()
+        else:
+            confirm = 'y'
+        if confirm != "y":
+            print("Can't continue")
+            sys.exit(1)
+        else:
+            try:
+                urllib.request.urlretrieve(url, zipfn)
+                if verbosity > 0:
+                    print("Done downloading. Extracting...")
+                archive = ZipFile(zipfn)
+                archive.extractall(join(path, 'glove_files'))
+                if verbosity > 0:
+                    print("Done extracting")
+            except:
+                e = sys.exc_info()[0]
+                print("Can't continue: %s" % e)
+                sys.exit(1)
+    vocab_ret = {}
+    if verbosity > 0:
+        #400000 is the size of the vocabulary
+        print("Reading 400000 %d-dimensional vectors" % dimsize)
+    with codecs.open(fn, 'r', 'utf8') as f:
+        for line in f:
+            split_line = str(line).rstrip().split(' ')
+            word = split_line[0]
+            if existing is not None and word not in existing:
+                continue
+            vocab_ret[word] = np.array(list(map(float, split_line[1:])))
+    return vocab_ret
+
+punct_matcher = re.compile(r'[{}]+'.format(re.escape(punctuation)))
+space_matcher = re.compile(r'\s+')
+def tokenize(article):
+    stripped = article.rstrip().lstrip()
+    no_punct = re.sub(punct_matcher, '', stripped)
+    tokenized = re.split(space_matcher, no_punct)
+    # While the wikipedia articles may impart information by their case,
+    # the vectors we're using are all lowercase
+    lowered = list(map(lambda x: x.lower(), tokenized))
+    return lowered
 
 class Representer:
-    def __init__(self):
-        # hardcode
-        pass
+    def __init__(self, cache_path, normalize=True,
+                 verbosity=1, filter_by=None):
+        """ Load up 200 dimensional Glove vectors from cache """
+        self.dim = 200
+        self.verbosity = verbosity
+        self.normalize = normalize
+        self.maxes = None
+        self.mins = None
+        # Normally I would do this in fit() but due to memory constraints
+        # it should be done in the __init__
+        if filter_by is not None:
+            self.existing = set()
+            for article in filter_by:
+                for word in tokenize(article):
+                    if word not in self.existing:
+                        self.existing.add(word)
+        else:
+            self.existing = None
+        self.vocab = glove_read(self.dim, cache_path, verbosity=verbosity,
+                                existing=self.existing)
+        if self.verbosity > 0:
+            print("Vocabulary size: %d" % len(self.vocab))
 
     def fit(self, dataset):
-        # figure out the parameters of the representation
-        # given this dataset, and store them as the representer parameters
-        pass
+        """ Figure out normalization parameters """
+        # awkwardly requires that we transform first, so we need to turn off
+        # normalization so it won't yell at us
+        if self.verbosity > 0:
+            print("Determining normalization constants")
+        if self.normalize:
+            self.normalize = False
+            to_normalize = self.transform(dataset)
+            self.normalize = True
+            self.maxes = np.max(to_normalize, axis=0)
+            self.mins = np.min(to_normalize, axis=0)
+            if self.verbosity > 1:
+                print("Maxes: %r\n Mins: %r" % (self.maxes, self.mins))
+        return self
 
     def transform(self, dataset):
-        # apply modifications to the dataset to represent it
-        pass
+        vecs = []
+        oov = 0
+        total_words = 0
+        if self.verbosity > 0:
+            print("Transforming %d articles" % len(dataset))
+        for article in dataset:
+            avg_vec = np.zeros((1, self.dim))
+            tok_unfilt = tokenize(article)
+            tokenized_article = list(filter(lambda x: x in self.vocab,
+                                            tok_unfilt))
+            oov += len(tok_unfilt) - len(tokenized_article)
+            total_words += len(tok_unfilt)
+
+            for word in tokenized_article:
+                avg_vec += (1/len(tokenized_article))*(self.vocab[word].reshape(1,self.dim))
+            vecs.append(avg_vec)
+        if self.verbosity > 0:
+            print("%d words were OOV out of %d total" % (oov, total_words))
+        vecs = np.vstack(vecs)
+        if self.normalize:
+            vecs = (vecs - self.maxes) / (self.maxes - self.mins)
+            vecs[np.where(np.isnan(vecs))] = 0.5
+        return vecs
 
     def fit_transform(self, dataset):
-        # convenience
         self.fit(dataset)
         return self.transform(dataset)
 

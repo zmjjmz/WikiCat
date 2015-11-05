@@ -1,20 +1,21 @@
 from __future__ import division, print_function # Python2 compat
 from argparse import ArgumentParser
 from os import getcwd, mkdir
+from itertools import chain
 from os.path import (
     join,
     exists,
     getmtime,
 )
 from WikiCatUtils import (
-    #load_model_params,
     get_fullpath,
     read_categories,
-    #save_model,
+    save_obj,
     ArticlePage,
     CategoryPage,
     Cache,
     Representer,
+    Model,
 )
 
 if __name__ == "__main__":
@@ -45,12 +46,19 @@ if __name__ == "__main__":
                             considered relative to the current directory.', dest='model_out',
                             default='/tmp/WikiCat/model.pkl')
 
+    arg_parser.add_argument("-r", "--repr-file", action='store', help='Path to\
+                            where the representer (i.e. normalization params,\
+                            vocab) object is stored.', dest='repr_file',
+                            default='/tmp/WikiCat/repr.pkl')
+
     arg_parser.add_argument("-c", "--cache", action='store', help="Directory containing the\
                             scraped articles in subdirectories corresponding to their\
                             categories.  When the article scraping happens, these articles\
                             are used if their date modified is greater than the article's,\
                             and the scraping writes to this directory. If left unspecified,\
-                            articles will be stored in /tmp/WikiCat/cache/.",
+                            articles will be stored in /tmp/WikiCat/cache/.\
+                            Downloaded GloVe vectors are also stored in this\
+                            directory.",
                             dest='cache', default='/tmp/WikiCat/cache')
 
     arg_parser.add_argument("-u", "--use-only-cache", action='store_true',
@@ -91,30 +99,36 @@ if __name__ == "__main__":
     # accidentally omit a category since they have very a very different amount
     # of articles associated with them
 
-    dset = Cache.get_dataset(0.6, 0.2, 0.2)
+    dset, label_map = cache.get_dataset(0.6, 0.2, 0.2)
     # each of train, val, test is a tuple of article content and labels
 
     # Build representation of the data according to the arguments
     # this is encapsulated in the Representer object, which will take care of
     # vocabulary building and term weighting (if necessary)
-    dataset_rep = Representer() # getting rid of options for this
+    dataset_rep = Representer(get_fullpath(args.cache), verbosity=args.verbosity, filter_by=chain(dset['train'][0], dset['val'][0], dset['test'][0]))
+    print(dataset_rep.maxes)
+    print(dataset_rep.mins)
     #sklearn style
     dset_represented = {}
-    dset_represented['train'] = dataset_rep.fit_transform(dset['train'])
+    dset_represented['train'] = (dataset_rep.fit_transform(dset['train'][0]),
+                                 dset['train'][1])
+
+
+    dset_represented['val'] = (dataset_rep.transform(dset['val'][0]),
+                               dset['val'][1])
+    dset_represented['test'] = (dataset_rep.transform(dset['test'][0]),
+                               dset['test'][1])
 
     # Train model
-
-    dset_represented['val'] = dataset_rep.transform(dset['val'])
-    dset_represented['test'] = dataset_rep.transform(dset['test'])
-
-    model = Model()
-    # val is used for hyperparameter tuning
-    model.fit(dset_represented['train'], dset_represented['val'])
+    model = Model(label_map)
+    model.fit(dset_represented['train'])
 
     # Evaluate model on validation, testing sets
     if args.verbosity > 0:
-        print(model.evaluate(dset_represented))
+        model.evaluate(dset_represented)
 
-    model.save(args.model_out)
+    save_obj(model, get_fullpath(args.model_out), verbosity=args.verbosity)
+    save_obj(dataset_rep, get_fullpath(args.repr_file),
+             verbosity=args.verbosity)
 
 

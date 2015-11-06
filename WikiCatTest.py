@@ -2,7 +2,6 @@ from __future__ import division, print_function # Python2 compat
 from argparse import ArgumentParser
 from os import getcwd, mkdir
 from itertools import chain
-from scipy.stats import entropy
 import sys
 import numpy as np
 from os.path import (

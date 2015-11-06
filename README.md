@@ -25,3 +25,10 @@ IPython Notebooks. Run WikiCatBuild with -r test at least once to use these note
 - Exploratory : This is the notebook I used to to prototype the process of finding a decent classifier for the data
 - Analysis : This is a notebook going through some properties of the data and (to a lesser extent) the learned classifier
 
+##Installation
+
+    git clone https://github.com/zmjjmz/WikiCat.git
+    cd WikiCat/
+    pip install -r requirements.txt
+
+The scripts and notebook should be useable as outlined above.

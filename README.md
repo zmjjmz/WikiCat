@@ -27,6 +27,8 @@ IPython Notebooks. Run WikiCatBuild with -r test at least once to use these note
 
 ##Installation
 
+Note: So far I can only support Python 3.
+
     git clone https://github.com/zmjjmz/WikiCat.git
     cd WikiCat/
     pip install -r requirements.txt
